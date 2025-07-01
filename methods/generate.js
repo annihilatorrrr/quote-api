@@ -53,13 +53,14 @@ const returnCanvasToPool = (canvas) => {
 }
 
 const normalizeColor = (color) => {
-  const canvas = createCanvas(0, 0)
+  const canvas = getPooledCanvas(1, 1) // Minimal size for color normalization
   const canvasCtx = canvas.getContext('2d')
 
   canvasCtx.fillStyle = color
-  color = canvasCtx.fillStyle
+  const normalizedColor = canvasCtx.fillStyle
 
-  return color
+  returnCanvasToPool(canvas)
+  return normalizedColor
 }
 
 const colorLuminance = (hex, lum) => {
@@ -83,7 +84,7 @@ const colorLuminance = (hex, lum) => {
 }
 
 const imageAlpha = (image, alpha) => {
-  const canvas = createCanvas(image.width, image.height)
+  const canvas = getPooledCanvas(image.width, image.height)
   const canvasCtx = canvas.getContext('2d')
 
   canvasCtx.globalAlpha = alpha
@@ -238,7 +239,7 @@ module.exports = async (parm) => {
 
     const quoteMargin = 5 * parm.scale
 
-    const canvas = createCanvas(width, height + (quoteMargin * quoteImages.length))
+    const canvas = getPooledCanvas(width, height + (quoteMargin * quoteImages.length))
     const canvasCtx = canvas.getContext('2d')
 
     let imageY = 0
@@ -271,7 +272,7 @@ module.exports = async (parm) => {
 
     const canvasImage = await loadImage(await imageQuoteSharp.toBuffer())
 
-    const canvasPadding = createCanvas(canvasImage.width, canvasImage.height + downPadding)
+    const canvasPadding = getPooledCanvas(canvasImage.width, canvasImage.height + downPadding)
     const canvasPaddingCtx = canvasPadding.getContext('2d')
 
     canvasPaddingCtx.drawImage(canvasImage, 0, 0)
@@ -289,7 +290,7 @@ module.exports = async (parm) => {
 
     const canvasImage = await loadImage(canvasQuote.toBuffer())
 
-    const canvasPic = createCanvas(canvasImage.width + widthPadding, canvasImage.height + heightPadding)
+    const canvasPic = getPooledCanvas(canvasImage.width + widthPadding, canvasImage.height + heightPadding)
     const canvasPicCtx = canvasPic.getContext('2d')
 
     // Optimized gradient background creation
@@ -320,7 +321,7 @@ module.exports = async (parm) => {
 
     quoteImage = await sharp(canvasPic.toBuffer()).png({ lossless: true, force: true }).toBuffer()
   } else if (type === 'stories') {
-    const canvasPic = createCanvas(720, 1280)
+    const canvasPic = getPooledCanvas(720, 1280)
     const canvasPicCtx = canvasPic.getContext('2d')
 
     // Optimized gradient background creation for stories

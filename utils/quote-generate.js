@@ -12,6 +12,51 @@ const { Telegram } = require('telegraf')
 
 const emojiDb = new EmojiDbLib({ useDefaultDb: true })
 
+// Canvas pool for reusing canvases
+const canvasPool = {
+  small: [], // For canvases < 1000x1000
+  medium: [], // For canvases < 2000x2000
+  large: [] // For larger canvases
+}
+
+const getPooledCanvas = (width, height) => {
+  const size = width * height
+  let pool
+
+  if (size < 1000000) pool = canvasPool.small
+  else if (size < 4000000) pool = canvasPool.medium
+  else pool = canvasPool.large
+
+  // Try to find a suitable canvas from pool
+  for (let i = 0; i < pool.length; i++) {
+    const canvas = pool[i]
+    if (canvas.width >= width && canvas.height >= height) {
+      pool.splice(i, 1) // Remove from pool
+      return canvas
+    }
+  }
+
+  // Create new canvas if none suitable found
+  return createCanvas(width, height)
+}
+
+const returnCanvasToPool = (canvas) => {
+  const size = canvas.width * canvas.height
+  let pool
+
+  if (size < 1000000) pool = canvasPool.small
+  else if (size < 4000000) pool = canvasPool.medium
+  else pool = canvasPool.large
+
+  // Only keep reasonable number of canvases in each pool
+  if (pool.length < 5) {
+    // Clear the canvas
+    const ctx = canvas.getContext('2d')
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    pool.push(canvas)
+  }
+}
+
 function loadFont () {
   console.log('font load start')
   const fontsDir = 'assets/fonts/'
@@ -113,7 +158,7 @@ class QuoteGenerate {
 
   async avatarImageLatters (letters, color) {
     const size = 500
-    const canvas = createCanvas(size, size)
+    const canvas = getPooledCanvas(size, size)
     const context = canvas.getContext('2d')
 
     const gradient = context.createLinearGradient(0, 0, canvas.width, canvas.height)
@@ -364,7 +409,7 @@ class QuoteGenerate {
     const fallbackEmojiImageJson = emojiImageByBrand[fallbackEmojiBrand]
 
     // Pre-calculate text dimensions to avoid creating oversized canvas
-    const canvas = createCanvas(maxWidth + fontSize, maxHeight + fontSize)
+    const canvas = getPooledCanvas(maxWidth + fontSize, maxHeight + fontSize)
     const canvasCtx = canvas.getContext('2d')
 
     // text = text.slice(0, 4096)
@@ -679,11 +724,14 @@ class QuoteGenerate {
       if (breakWrite) break
     }
 
-    const canvasResize = createCanvas(textWidth, lineY + fontSize)
+    const canvasResize = getPooledCanvas(textWidth, lineY + fontSize)
     const canvasResizeCtx = canvasResize.getContext('2d')
 
     let dx = (lineDirection === 'rtl') ? textWidth - maxWidth + fontSize * 2 : 0
     canvasResizeCtx.drawImage(canvas, dx, 0)
+
+    // Return original canvas to pool
+    returnCanvasToPool(canvas)
 
     return canvasResize
   }
@@ -693,7 +741,7 @@ class QuoteGenerate {
     const x = 0
     const y = 0
 
-    const canvas = createCanvas(w, h)
+    const canvas = getPooledCanvas(w, h)
     const canvasCtx = canvas.getContext('2d')
 
     canvasCtx.fillStyle = color
@@ -717,7 +765,7 @@ class QuoteGenerate {
     const x = 0
     const y = 0
 
-    const canvas = createCanvas(w, h)
+    const canvas = getPooledCanvas(w, h)
     const canvasCtx = canvas.getContext('2d')
 
     const gradient = canvasCtx.createLinearGradient(0, 0, w, h)
@@ -765,7 +813,7 @@ class QuoteGenerate {
     const w = image.width
     const h = image.height
 
-    const canvas = createCanvas(w, h)
+    const canvas = getPooledCanvas(w, h)
     const canvasCtx = canvas.getContext('2d')
 
     const x = 0
@@ -789,7 +837,7 @@ class QuoteGenerate {
   }
 
   drawReplyLine (lineWidth, height, color) {
-    const canvas = createCanvas(20, height)
+    const canvas = getPooledCanvas(20, height)
     const context = canvas.getContext('2d')
     context.beginPath()
     context.moveTo(10, 0)
@@ -809,7 +857,7 @@ class QuoteGenerate {
       if (avatarImage) {
         const avatarSize = avatarImage.naturalHeight || avatarImage.height
 
-        const canvas = createCanvas(avatarSize, avatarSize)
+        const canvas = getPooledCanvas(avatarSize, avatarSize)
         const canvasCtx = canvas.getContext('2d')
 
         const avatarX = 0
@@ -848,7 +896,7 @@ class QuoteGenerate {
   drawWaveform (data) {
     const normalizedData = data.map(i => i / 32)
 
-    const canvas = createCanvas(4500, 500)
+    const canvas = getPooledCanvas(4500, 500)
     const padding = 50
     canvas.height = (canvas.height + padding * 2)
     const ctx = canvas.getContext('2d')
@@ -976,7 +1024,7 @@ class QuoteGenerate {
       backgroundColorOne = backgroundColorTwo = 'rgba(0, 0, 0, 0.5)'
     }
 
-    const canvas = createCanvas(width, height)
+    const canvas = getPooledCanvas(width, height)
     const canvasCtx = canvas.getContext('2d')
 
     const rectPosX = blockPosX
@@ -1021,12 +1069,13 @@ class QuoteGenerate {
       return this.colorCache.get(color)
     }
 
-    const canvas = createCanvas(0, 0)
+    const canvas = getPooledCanvas(1, 1) // Minimal size for color normalization
     const canvasCtx = canvas.getContext('2d')
 
     canvasCtx.fillStyle = color
     const normalizedColor = canvasCtx.fillStyle
 
+    returnCanvasToPool(canvas)
     this.colorCache.set(color, normalizedColor)
     return normalizedColor
   }
