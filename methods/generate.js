@@ -4,6 +4,54 @@ const {
 const { createCanvas, loadImage } = require('canvas')
 const sharp = require('sharp')
 
+// Cache for pattern images to avoid repeated loading
+let patternImageCache = null
+
+// Canvas pool for reusing canvases
+const canvasPool = {
+  small: [], // For canvases < 1000x1000
+  medium: [], // For canvases < 2000x2000
+  large: [] // For larger canvases
+}
+
+const getPooledCanvas = (width, height) => {
+  const size = width * height
+  let pool
+
+  if (size < 1000000) pool = canvasPool.small
+  else if (size < 4000000) pool = canvasPool.medium
+  else pool = canvasPool.large
+
+  // Try to find a suitable canvas from pool
+  for (let i = 0; i < pool.length; i++) {
+    const canvas = pool[i]
+    if (canvas.width >= width && canvas.height >= height) {
+      pool.splice(i, 1) // Remove from pool
+      return canvas
+    }
+  }
+
+  // Create new canvas if none suitable found
+  return createCanvas(width, height)
+}
+
+const returnCanvasToPool = (canvas) => {
+  const size = canvas.width * canvas.height
+  let pool
+
+  if (size < 1000000) pool = canvasPool.small
+  else if (size < 4000000) pool = canvasPool.medium
+  else pool = canvasPool.large
+
+  // Only keep reasonable number of canvases in each pool
+  if (pool.length < 5) {
+    // Clear the canvas
+    const ctx = canvas.getContext('2d')
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    pool.push(canvas)
+  }
+}
+
 const normalizeColor = (color) => {
   const canvas = createCanvas(0, 0)
   const canvasCtx = canvas.getContext('2d')
@@ -36,14 +84,42 @@ const colorLuminance = (hex, lum) => {
 
 const imageAlpha = (image, alpha) => {
   const canvas = createCanvas(image.width, image.height)
-
   const canvasCtx = canvas.getContext('2d')
 
   canvasCtx.globalAlpha = alpha
-
   canvasCtx.drawImage(image, 0, 0)
 
   return canvas
+}
+
+// Load pattern image once and cache it
+const loadPatternImage = async () => {
+  if (!patternImageCache) {
+    patternImageCache = await loadImage('./assets/pattern_02.png')
+  }
+  return patternImageCache
+}
+
+// Optimized gradient creation
+const createGradientBackground = async (canvasPicCtx, width, height, patternColorOne, patternColorTwo) => {
+  // Create radial gradient
+  const gradient = canvasPicCtx.createRadialGradient(
+    width / 2, height / 2, 0,
+    width / 2, height / 2, width / 2
+  )
+
+  gradient.addColorStop(0, patternColorOne)
+  gradient.addColorStop(1, patternColorTwo)
+
+  canvasPicCtx.fillStyle = gradient
+  canvasPicCtx.fillRect(0, 0, width, height)
+
+  // Add pattern overlay
+  const canvasPatternImage = await loadPatternImage()
+  const pattern = canvasPicCtx.createPattern(imageAlpha(canvasPatternImage, 0.3), 'repeat')
+
+  canvasPicCtx.fillStyle = pattern
+  canvasPicCtx.fillRect(0, 0, width, height)
 }
 
 module.exports = async (parm) => {
@@ -216,32 +292,11 @@ module.exports = async (parm) => {
     const canvasPic = createCanvas(canvasImage.width + widthPadding, canvasImage.height + heightPadding)
     const canvasPicCtx = canvasPic.getContext('2d')
 
-    // radial gradient background (top left)
-    const gradient = canvasPicCtx.createRadialGradient(
-      canvasPic.width / 2,
-      canvasPic.height / 2,
-      0,
-      canvasPic.width / 2,
-      canvasPic.height / 2,
-      canvasPic.width / 2
-    )
-
+    // Optimized gradient background creation
     const patternColorOne = colorLuminance(backgroundColorTwo, 0.15)
     const patternColorTwo = colorLuminance(backgroundColorOne, 0.15)
 
-    gradient.addColorStop(0, patternColorOne)
-    gradient.addColorStop(1, patternColorTwo)
-
-    canvasPicCtx.fillStyle = gradient
-    canvasPicCtx.fillRect(0, 0, canvasPic.width, canvasPic.height)
-
-    const canvasPatternImage = await loadImage('./assets/pattern_02.png')
-    // const canvasPatternImage = await loadImage('./assets/pattern_ny.png');
-
-    const pattern = canvasPicCtx.createPattern(imageAlpha(canvasPatternImage, 0.3), 'repeat')
-
-    canvasPicCtx.fillStyle = pattern
-    canvasPicCtx.fillRect(0, 0, canvasPic.width, canvasPic.height)
+    await createGradientBackground(canvasPicCtx, canvasPic.width, canvasPic.height, patternColorOne, patternColorTwo)
 
     // Add shadow effect to the canvas image
     canvasPicCtx.shadowOffsetX = 8
@@ -268,31 +323,11 @@ module.exports = async (parm) => {
     const canvasPic = createCanvas(720, 1280)
     const canvasPicCtx = canvasPic.getContext('2d')
 
-    // radial gradient background (top left)
-    const gradient = canvasPicCtx.createRadialGradient(
-      canvasPic.width / 2,
-      canvasPic.height / 2,
-      0,
-      canvasPic.width / 2,
-      canvasPic.height / 2,
-      canvasPic.width / 2
-    )
-
+    // Optimized gradient background creation for stories
     const patternColorOne = colorLuminance(backgroundColorTwo, 0.25)
     const patternColorTwo = colorLuminance(backgroundColorOne, 0.15)
 
-    gradient.addColorStop(0, patternColorOne)
-    gradient.addColorStop(1, patternColorTwo)
-
-    canvasPicCtx.fillStyle = gradient
-    canvasPicCtx.fillRect(0, 0, canvasPic.width, canvasPic.height)
-
-    const canvasPatternImage = await loadImage('./assets/pattern_02.png')
-
-    const pattern = canvasPicCtx.createPattern(imageAlpha(canvasPatternImage, 0.3), 'repeat')
-
-    canvasPicCtx.fillStyle = pattern
-    canvasPicCtx.fillRect(0, 0, canvasPic.width, canvasPic.height)
+    await createGradientBackground(canvasPicCtx, canvasPic.width, canvasPic.height, patternColorOne, patternColorTwo)
 
     // Add shadow effect to the canvas image
     canvasPicCtx.shadowOffsetX = 8

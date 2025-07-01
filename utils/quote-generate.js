@@ -4,7 +4,7 @@ const EmojiDbLib = require('emoji-db')
 const { loadImage } = require('canvas')
 const loadImageFromUrl = require('./image-load-url')
 const sharp = require('sharp')
-const { Jimp, JimpMime } = require('jimp')
+// Jimp removed for performance optimization
 const smartcrop = require('smartcrop-sharp')
 const runes = require('runes')
 const zlib = require('zlib')
@@ -258,59 +258,39 @@ class QuoteGenerate {
         try {
           const imageSharp = sharp(load)
           const imageMetadata = await imageSharp.metadata()
-          const sharpPng = await imageSharp.png({ lossless: true, force: true }).toBuffer()
 
-          if (!imageMetadata || !imageMetadata.width || !imageMetadata.height || !sharpPng) {
-            // Fallback to original image without processing
-            try {
-              return await loadImage(load)
-            } catch (fallbackError) {
-              console.warn('Failed to load original image as fallback:', fallbackError.message)
-              return null
-            }
+          if (!imageMetadata || !imageMetadata.width || !imageMetadata.height) {
+            return await loadImage(load).catch(() => null)
           }
 
-          let croppedImage
+          let processedBuffer
 
           if (imageMetadata.format === 'webp') {
+            // For webp, just convert to PNG without cropping for better performance
+            processedBuffer = await imageSharp.png({ compressionLevel: 6, force: true }).toBuffer()
+          } else if (crop) {
+            // Only do expensive cropping if explicitly requested
             try {
-              const jimpImage = await Jimp.read(sharpPng)
-              croppedImage = await jimpImage.autocrop().getBuffer(JimpMime.png)
-            } catch (jimpError) {
-              console.warn('Failed to process webp with Jimp, using original:', jimpError.message)
-              croppedImage = sharpPng
+              const smartcropResult = await smartcrop.crop(load, { width: mediaSize, height: imageMetadata.height })
+              const cropData = smartcropResult.topCrop
+
+              processedBuffer = await imageSharp
+                .extract({ width: cropData.width, height: cropData.height, left: cropData.x, top: cropData.y })
+                .png({ compressionLevel: 6, force: true })
+                .toBuffer()
+            } catch (cropError) {
+              console.warn('Crop failed, using resized image:', cropError.message)
+              processedBuffer = await imageSharp.png({ compressionLevel: 6, force: true }).toBuffer()
             }
           } else {
-            try {
-              const smartcropResult = await smartcrop.crop(sharpPng, { width: mediaSize, height: imageMetadata.height })
-              const crop = smartcropResult.topCrop
-
-              croppedImage = await imageSharp.extract({ width: crop.width, height: crop.height, left: crop.x, top: crop.y }).png({ lossless: true, force: true }).toBuffer()
-            } catch (cropError) {
-              console.warn('Failed to crop image, using original:', cropError.message)
-              croppedImage = sharpPng
-            }
+            // Simple conversion for better performance
+            processedBuffer = await imageSharp.png({ compressionLevel: 6, force: true }).toBuffer()
           }
 
-          try {
-            return await loadImage(croppedImage)
-          } catch (loadError) {
-            console.warn('Failed to load processed image, trying original:', loadError.message)
-            try {
-              return await loadImage(load)
-            } catch (originalError) {
-              console.warn('Failed to load original image as final fallback:', originalError.message)
-              return null
-            }
-          }
+          return await loadImage(processedBuffer)
         } catch (sharpError) {
-          console.warn('Failed to process image with Sharp, trying original:', sharpError.message)
-          try {
-            return await loadImage(load)
-          } catch (originalError) {
-            console.warn('Failed to load original image:', originalError.message)
-            return null
-          }
+          console.warn('Sharp processing failed, using original:', sharpError.message)
+          return await loadImage(load).catch(() => null)
         }
       } else {
         try {
@@ -1034,18 +1014,26 @@ class QuoteGenerate {
   }
 
   normalizeColor (color) {
+    // Cache for normalized colors to avoid repeated canvas operations
+    if (!this.colorCache) this.colorCache = new Map()
+
+    if (this.colorCache.has(color)) {
+      return this.colorCache.get(color)
+    }
+
     const canvas = createCanvas(0, 0)
     const canvasCtx = canvas.getContext('2d')
 
     canvasCtx.fillStyle = color
-    color = canvasCtx.fillStyle
+    const normalizedColor = canvasCtx.fillStyle
 
-    return color
+    this.colorCache.set(color, normalizedColor)
+    return normalizedColor
   }
 
   getLineDirection (words, startIndex) {
     const RTLMatch = /[\u0591-\u07FF\u200F\u202B\u202E\uFB1D-\uFDFD\uFE70-\uFEFC]/
-    const neutralMatch = /[\u0001-\u0040\u005B-\u0060\u007B-\u00BF\u00D7\u00F7\u02B9-\u02FF\u2000-\u2BFF\u2010-\u2029\u202C\u202F-\u2BFF\u1F300-\u1F5FF\u1F600-\u1F64F]/
+    const neutralMatch = /[\u0020-\u0040\u005B-\u0060\u007B-\u00BF\u00D7\u00F7\u02B9-\u02FF\u2000-\u2BFF\u2010-\u2029\u202C\u202F-\u2BFF\u1F300-\u1F5FF\u1F600-\u1F64F]/
 
     for (let index = startIndex; index < words.length; index++) {
       if (words[index].word.match(RTLMatch)) {
@@ -1126,7 +1114,11 @@ class QuoteGenerate {
 
     const nameSize = 22 * scale
 
-    let nameCanvas
+    // Parallel resource loading for better performance
+    const resourcePromises = []
+
+    // Name canvas generation
+    let namePromise = null
     if ((message.from && message.from.name) || (message.from && (message.from.first_name || message.from.last_name))) {
       let name = message.from.name || `${message.from.first_name || ''} ${message.from.last_name || ''}`.trim()
 
@@ -1151,7 +1143,7 @@ class QuoteGenerate {
         })
       }
 
-      nameCanvas = await this.drawMultilineText(
+      namePromise = this.drawMultilineText(
         name,
         nameEntities,
         nameSize,
@@ -1162,16 +1154,17 @@ class QuoteGenerate {
         nameSize,
         emojiBrand
       )
+      resourcePromises.push(namePromise)
     }
 
     let fontSize = 24 * scale
-
     let textColor = '#fff'
     if (backStyle === 'light') textColor = '#000'
 
-    let textCanvas
+    // Text canvas generation
+    let textPromise = null
     if (message.text) {
-      textCanvas = await this.drawMultilineText(
+      textPromise = this.drawMultilineText(
         message.text,
         message.entities,
         fontSize,
@@ -1182,17 +1175,25 @@ class QuoteGenerate {
         height - fontSize,
         emojiBrand
       )
+      resourcePromises.push(textPromise)
     }
 
-    let avatarCanvas
+    // Avatar canvas generation
+    let avatarPromise = null
     if (message.avatar && message.from) {
-      try {
-        avatarCanvas = await this.drawAvatar(message.from)
-      } catch (error) {
+      avatarPromise = this.drawAvatar(message.from).catch((error) => {
         console.warn('Error drawing avatar:', error.message)
-        avatarCanvas = null
-      }
+        return null
+      })
+      resourcePromises.push(avatarPromise)
     }
+
+    // Wait for all basic resources to load in parallel
+    await Promise.all(resourcePromises)
+
+    const nameCanvas = namePromise ? await namePromise : null
+    const textCanvas = textPromise ? await textPromise : null
+    const avatarCanvas = avatarPromise ? await avatarPromise : null
 
     let replyName, replyNameColor, replyText
     if (message.replyMessage && message.replyMessage.name && message.replyMessage.text) {
